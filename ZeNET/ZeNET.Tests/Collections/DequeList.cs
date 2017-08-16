@@ -268,13 +268,24 @@ namespace ZeNET.Tests.Collections
                 return true;
             }));
 
+            actionList.Add(new ActionPair("CopyTo", () =>
+            {
+                T[] cpy1 = new T[list.Count];
+                T[] cpy2 = new T[tester.Count];
+                list.CopyTo(cpy1, 0);
+                tester.CopyTo(cpy2, 0);
+                int mismatchIndex;
+                string message;
+                return TestEquality<T>(cpy1, cpy2, Comparer<T>.Default, out mismatchIndex, out message);
+            }));
+
             return actionList.ToArray();
         }
 
         [TestMethod]
         public void DequeList_AllMethodsRandomized()
         {
-            const int reps = 1000;
+            const int reps = 800;
             Random r = new Random();
             DequeList<int> list = new DequeList<int>();
             DequeListTester<int> tester = new DequeListTester<int>();

@@ -366,16 +366,16 @@ namespace ZeNET.Collections
         /// <inheritdoc/>
         public IEnumerator<T> GetEnumerator()
         {
-            return this.enumerate().GetEnumerator();
+            return this.enumerate();
         }
 
         /// <inheritdoc/>
         IEnumerator IEnumerable.GetEnumerator()
         {
-            return this.enumerate().GetEnumerator();
+            return this.enumerate();
         }
 
-        private IEnumerable<T> enumerate()
+        private IEnumerator<T> enumerate()
         {
             int myBarrier = ++this.enumerationCount;
             int count = this.Count;

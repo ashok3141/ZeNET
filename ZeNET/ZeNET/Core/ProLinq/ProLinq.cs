@@ -142,17 +142,18 @@ namespace ZeNET.Core.Compatibility.ProLinq
                 return false;
             else
             {
-                IEnumerator<TSource> enumerator1 = first.GetEnumerator();
-                IEnumerator<TSource> enumerator2 = second.GetEnumerator();
+                using (IEnumerator<TSource> enumerator1 = first.GetEnumerator())
+                using (IEnumerator<TSource> enumerator2 = second.GetEnumerator())
+                {
+                    while (enumerator1.MoveNext())
+                        if (!enumerator2.MoveNext() || !comparer.Equals(enumerator1.Current, enumerator2.Current))
+                            return false;
 
-                while (enumerator1.MoveNext())
-                    if (!enumerator2.MoveNext() || !comparer.Equals(enumerator1.Current, enumerator2.Current))
+                    if (enumerator2.MoveNext())
                         return false;
-
-                if (enumerator2.MoveNext())
-                    return false;
-                else
-                    return true;
+                    else
+                        return true;
+                }
             }
         }
 
@@ -165,17 +166,18 @@ namespace ZeNET.Core.Compatibility.ProLinq
                 return false;
             else
             {
-                IEnumerator<TSource> enumerator1 = first.GetEnumerator();
-                IEnumerator<TSource> enumerator2 = second.GetEnumerator();
+                using (IEnumerator<TSource> enumerator1 = first.GetEnumerator())
+                using (IEnumerator<TSource> enumerator2 = second.GetEnumerator())
+                {
+                    while (enumerator1.MoveNext())
+                        if (!enumerator2.MoveNext() || !comparer.Equals(enumerator1.Current, enumerator2.Current))
+                            return false;
 
-                while (enumerator1.MoveNext())
-                    if (!enumerator2.MoveNext() || !comparer.Equals(enumerator1.Current, enumerator2.Current))
+                    if (enumerator2.MoveNext())
                         return false;
-
-                if (enumerator2.MoveNext())
-                    return false;
-                else
-                    return true;
+                    else
+                        return true;
+                }
             }
         }
 
@@ -192,13 +194,15 @@ namespace ZeNET.Core.Compatibility.ProLinq
             else
             {
                 int index = 0;
-                IEnumerator<TSource> enumerator = source.GetEnumerator();
-                while (index < count && enumerator.MoveNext())
-                    index++;
+                using (IEnumerator<TSource> enumerator = source.GetEnumerator())
+                {
+                    while (index < count && enumerator.MoveNext())
+                        index++;
 
-                if (index == count)
-                    while (enumerator.MoveNext())
-                        yield return enumerator.Current;
+                    if (index == count)
+                        while (enumerator.MoveNext())
+                            yield return enumerator.Current;
+                }
             }
         }
 
@@ -206,11 +210,13 @@ namespace ZeNET.Core.Compatibility.ProLinq
         public static IEnumerable<TSource> Take<TSource>(this IEnumerable<TSource> source, int count)
         {
             int index = 0;
-            IEnumerator<TSource> enumerator = source.GetEnumerator();
-            while (index < count && enumerator.MoveNext())
+            using (IEnumerator<TSource> enumerator = source.GetEnumerator())
             {
-                yield return enumerator.Current;
-                index++;
+                while (index < count && enumerator.MoveNext())
+                {
+                    yield return enumerator.Current;
+                    index++;
+                }
             }
         }
 

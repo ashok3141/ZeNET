@@ -116,33 +116,35 @@ namespace ZeNET.Core.Extensions
         /// <returns>The CSV string.</returns>
         public static string ToCSVRow<T>(this T[] array)
         {
-            IEnumerator<T> enumerator = ((IEnumerable<T>)array).GetEnumerator();
-            if (enumerator.MoveNext())
+            using (IEnumerator<T> enumerator = ((IEnumerable<T>)array).GetEnumerator())
             {
-                StringBuilder sb = new StringBuilder();
-                string str = enumerator.Current.ToString();
-                if (str.Contains("\""))
-                    str = "\"" + str.Replace("\"", "\"\"") + "\"";
-                else if (str.Contains(",") || str.Contains("\n") || str.Contains("\r"))
-                    str = "\"" + str + "\"";
-
-                sb.Append(str);
-
-                while (enumerator.MoveNext())
+                if (enumerator.MoveNext())
                 {
-                    sb.Append(",");
-                    str = enumerator.Current.ToString();
+                    StringBuilder sb = new StringBuilder();
+                    string str = enumerator.Current.ToString();
                     if (str.Contains("\""))
                         str = "\"" + str.Replace("\"", "\"\"") + "\"";
                     else if (str.Contains(",") || str.Contains("\n") || str.Contains("\r"))
                         str = "\"" + str + "\"";
-                    sb.Append(str);
-                }
 
-                return sb.ToString();
+                    sb.Append(str);
+
+                    while (enumerator.MoveNext())
+                    {
+                        sb.Append(",");
+                        str = enumerator.Current.ToString();
+                        if (str.Contains("\""))
+                            str = "\"" + str.Replace("\"", "\"\"") + "\"";
+                        else if (str.Contains(",") || str.Contains("\n") || str.Contains("\r"))
+                            str = "\"" + str + "\"";
+                        sb.Append(str);
+                    }
+
+                    return sb.ToString();
+                }
+                else
+                    return String.Empty;
             }
-            else
-                return String.Empty;
         }
     }
 }

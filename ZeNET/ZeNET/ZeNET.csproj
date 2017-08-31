@@ -50,7 +50,7 @@
   <ItemGroup>
     <Compile Include="Collections\ArrayComparerByElement.cs" />
     <Compile Include="Collections\DequeList.cs" />
-    <Compile Include="Collections\ILinkedHeap.cs" />
+    <Compile Include="Collections\ILinkedHeapNode.cs" />
     <Compile Include="Collections\IPriorityQueue.cs" />
     <Compile Include="Collections\LinkedHeap.cs" />
     <Compile Include="Core\Annex.cs" />

@@ -53,7 +53,16 @@ namespace ZeNET.Collections
     /// <para>
     /// The linked heap needs the <see cref="ILinkedHeapNode.HeapIndex"/> property of the objects
     /// stored in it and uses it internally. The value stored in it is not useful outside the
-    /// context of a heap and should not be modified by other classes.
+    /// context of a heap and do not ever have to be read by other classes. Certainly, it should not
+    /// be modified by other classes. If it is modified, strange unexpected errors will likely occur
+    /// later, and exceptions may be thrown by calls to the methods of the heap.
+    /// </para>
+    /// <para>
+    /// The heap by default uses <see cref="Comparer{T}.Default"/> to determine the ordering of the
+    /// items within it, though this can be overridden at the time of construction. "Duplicates" are
+    /// permitted (that is, a comparison between two objects may return 0), though a single object
+    /// can be stored only once. The sameness of two objects is always determined via
+    /// <see cref="object.ReferenceEquals(object, object)"/>.
     /// </para>
     /// </remarks>
     /// <threadsafety static="true" instance="false"/>
@@ -79,7 +88,9 @@ namespace ZeNET.Collections
         }
 
         /// <summary>
-        /// Initializes the linked heap to use a custom comparer object for comparing elements.
+        /// Initializes the linked heap to use a custom comparer for comparing elements to determine
+        /// the ordering among them. The check for whether two elements are the same is always done
+        /// using <see cref="object.ReferenceEquals(object, object)"/>.
         /// </summary>
         /// <param name="comparer">The comparer whose <see cref="IComparer{T}.Compare(T, T)"/> is
         /// used as the comparison function.</param>
@@ -122,11 +133,10 @@ namespace ZeNET.Collections
 #endif
         private void noteModification()
         {
-            if (this.notifyOfModifications != default(Action))
+            if (this.notifyOfModifications != null)
             {
-                Action notify = this.notifyOfModifications;
-                this.notifyOfModifications = default(Action);
-                notify?.Invoke();
+                this.notifyOfModifications();
+                this.notifyOfModifications = null;
             }
         }
 
@@ -148,6 +158,7 @@ namespace ZeNET.Collections
             }
 
             this.heap[this.heapLength] = item;
+            this.heap[this.heapLength].HeapIndex = this.heapLength;
             this.swimUp(this.heapLength++);
         }
 
@@ -163,36 +174,39 @@ namespace ZeNET.Collections
         public void CopyTo(T[] array, int arrayIndex)
         {
             Array.Copy(this.heap, 0, array, arrayIndex, this.heapLength);
-            this.heap.CopyTo(array, arrayIndex);
         }
 
-        private IEnumerable<T> getEnumerable()
+        private IEnumerator<T> getEnumerator()
         {
             bool changed = false;
             Action acceptNotification = () => { changed = true; };
-            this.notifyOfModifications += acceptNotification;
+            try
+            {                
+                this.notifyOfModifications += acceptNotification;
 
-            for (int i = 0; i < this.heapLength; i++)
+                for (int i = 0; i < this.heapLength; i++)
+                {
+                    yield return this.heap[i];
+                    if (changed)
+                        throw new InvalidOperationException("The heap has been modified. Cannot continue enumeration.");
+                }
+            } finally
             {
-                yield return this.heap[i];
-                if (changed)
-                    throw new InvalidOperationException("The heap has been modified. Cannot continue enumeration.");
+                if (!changed)
+                    this.notifyOfModifications -= acceptNotification;
             }
-
-            if (!changed)
-                this.notifyOfModifications -= acceptNotification;
         }
 
         /// <inheritdoc/>
         public IEnumerator<T> GetEnumerator()
         {
-            return this.getEnumerable().GetEnumerator();
+            return this.getEnumerator();
         }
 
         /// <inheritdoc/>
         IEnumerator IEnumerable.GetEnumerator()
         {
-            return this.getEnumerable().GetEnumerator();
+            return this.getEnumerator();
         }
 
         /// <inheritdoc/>
@@ -210,8 +224,9 @@ namespace ZeNET.Collections
         /// the number of elements in the heap.</remarks>
         public T DeleteMax()
         {
-            if (this.heapLength == 0)
+            if (this.Count == 0)
                 throw new InvalidOperationException("Heap is empty. Max does not exist.");
+            Contract.EndContractBlock();
 
             this.noteModification();
 
@@ -222,12 +237,12 @@ namespace ZeNET.Collections
             else
             {
                 int end = --this.heapLength;
-                if ((this.heapLength << 2) >= this.heap.Length && this.heap.Length > MinCapacity)
+                if ((this.heapLength << 2) <= this.heap.Length && this.heap.Length > MinCapacity)
                 {
                     T[] replacement = new T[PowerOfTwoCeiling(this.heapLength) << 1];
                     Array.Copy(this.heap, 1, replacement, 1, end - 1);
                     replacement[0] = this.heap[end];
-                    this.heap = replacement;
+                    this.heap = replacement;                    
                 }
                 else
                 {
@@ -235,52 +250,94 @@ namespace ZeNET.Collections
                     this.heap[end] = default(T);
                 }
 
+                this.heap[0].HeapIndex = 0;
                 this.sink(0);
             }
 
             return ret;
         }
 
-        private void swimUp(int ind)
+        /// <summary>
+        /// Causes an element to swim up through its ancestry to its right location in the heap.
+        /// </summary>
+        /// <param name="ind">The index of the element to cause to swim up.</param>
+        /// <returns>True if there was any movement necessary (and hence occurred), false if not.</returns>
+        private bool swimUp(int ind)
         {
             int parent = (ind - 1) >> 1; // N.B.: (-1 >> 1) is -1.
-            while (parent >= 0 && this.doCompare(this.heap[parent], this.heap[ind]) < 0)
+            if (parent >= 0 && this.doCompare(this.heap[parent], this.heap[ind]) < 0)
             {
-                T temp = this.heap[parent];
-                this.heap[parent] = this.heap[ind];
-                this.heap[ind] = temp;
+                T swimmingElement = this.heap[ind];
+                this.heap[ind] = this.heap[parent];
                 this.heap[ind].HeapIndex = ind;
 
                 ind = parent;
                 parent = (ind - 1) >> 1;
+                while (parent >= 0 && this.doCompare(this.heap[parent], swimmingElement) < 0)
+                {
+                    this.heap[ind] = this.heap[parent];
+                    this.heap[ind].HeapIndex = ind;
+                    ind = parent;
+                    parent = (ind - 1) >> 1;
+                }
+
+                this.heap[ind] = swimmingElement;
+                this.heap[ind].HeapIndex = ind;
+                return true;
             }
-            this.heap[ind].HeapIndex = ind;
+            else
+                return false;
         }
 
-        private void sink(int ind)
+        private bool sink(int ind)
         {
             int uBound = this.heapLength - 1;
-            int greaterChild = (ind << 1) | 1; // works out to the same as (ind * 2) + 1
-
-            while (greaterChild <= uBound)
+            int greaterChild = (ind << 1) | 1;
+            if (greaterChild < uBound)
             {
-                if (greaterChild < uBound && this.doCompare(this.heap[greaterChild + 1], this.heap[greaterChild]) > 0)
+                if (this.doCompare(this.heap[greaterChild + 1], this.heap[greaterChild]) >= 0)
                     greaterChild++;
 
                 if (this.doCompare(this.heap[ind], this.heap[greaterChild]) < 0)
                 {
-                    T temp = this.heap[ind];
+                    T sinkingElement = this.heap[ind];
                     this.heap[ind] = this.heap[greaterChild];
-                    this.heap[greaterChild] = temp;
                     this.heap[ind].HeapIndex = ind;
                     ind = greaterChild;
-                    greaterChild = (ind << 1) | 1; // works out to the same as (ind * 2) + 1
+                    greaterChild = (ind << 1) | 1;
+
+                    while (greaterChild <= uBound)
+                    {
+                        if (greaterChild < uBound && this.doCompare(this.heap[greaterChild + 1], this.heap[greaterChild]) >= 0)
+                            greaterChild++;
+
+                        if (this.doCompare(sinkingElement, this.heap[greaterChild]) < 0)
+                        {
+                            this.heap[ind] = this.heap[greaterChild];
+                            this.heap[ind].HeapIndex = ind;
+                        }
+                        else
+                            break;
+
+                        ind = greaterChild;
+                        greaterChild = (ind << 1) | 1;
+                    }
+
+                    this.heap[ind] = sinkingElement;
+                    this.heap[ind].HeapIndex = ind;
+                    return true;
                 }
-                else
-                    break;
+            } else if (greaterChild == uBound && this.doCompare(this.heap[ind], this.heap[greaterChild]) < 0)
+            {
+                T temp = this.heap[ind];
+                this.heap[ind] = this.heap[greaterChild];
+                this.heap[greaterChild] = temp;
+                this.heap[greaterChild].HeapIndex = greaterChild;
+                this.heap[ind].HeapIndex = ind;
+                return true;
             }
 
-            this.heap[ind].HeapIndex = ind;
+            return false;
         }
 
         /// <summary>
@@ -294,6 +351,16 @@ namespace ZeNET.Collections
         /// might change the result of comparing it (using the comparer specified for the heap) to
         /// other objects stored in the heap.
         /// </para>
+        /// <para>
+        /// If changes to multiple items in the heap are to be made that require calls to
+        /// <see cref="Refresh(T)"/>, then the call should be made after changes made to every item.
+        /// It is not enough to make calls for all items together at the end.
+        /// </para>
+        /// <para>
+        /// In the absence of this method, one would have to call <see cref="Remove(T)"/>, followed
+        /// by <see cref="Add(T)"/>, for the item. Calling only <see cref="Refresh(T)"/> is a much
+        /// faster alternative.
+        /// </para>
         /// </remarks>
         public void Refresh(T item)
         {
@@ -303,8 +370,8 @@ namespace ZeNET.Collections
             if (ind < 0 || ind >= this.heapLength || !object.ReferenceEquals(this.heap[ind], item))
                 throw new ArgumentException("Either item does not belong to the heap or was not properly updated.", "item");
 
-            this.swimUp(ind);
-            this.sink(ind);
+            if (!this.swimUp(ind))
+                this.sink(ind);
         }
 
         /// <inheritdoc/>
@@ -329,8 +396,8 @@ namespace ZeNET.Collections
                     this.heap[end] = default(T);
                     this.heapLength--;
 
-                    this.swimUp(ind);
-                    this.sink(ind);
+                    if (!this.swimUp(ind))
+                        this.sink(ind);
                 }
                 else
                 {
@@ -338,7 +405,7 @@ namespace ZeNET.Collections
                     this.heapLength--;
                 }
 
-                if ((this.heapLength << 2) >= this.heap.Length && this.heap.Length > MinCapacity)
+                if ((this.heapLength << 2) <= this.heap.Length && this.heap.Length > MinCapacity)
                 {
                     T[] replacement = new T[PowerOfTwoCeiling(this.heapLength) << 1];
                     Array.Copy(this.heap, 0, replacement, 0, this.heapLength);
@@ -356,7 +423,6 @@ namespace ZeNET.Collections
         }
 
         #region Debugging
-
         private bool hasLinkageIntegrity()
         {
             for (int i = 0; i < this.heapLength; i++)

@@ -30,8 +30,6 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 using ZeNET.Collections;
 using static ZeNET.Tests.Collections.ListTestHelper;
 
-
-
 namespace ZeNET.Tests.Collections
 {
     [TestClass]

@@ -101,7 +101,7 @@ namespace ZeNET.Collections
 #endif
             get
             {
-                if (index >= this.count)
+                if (index >= this.Count)
                     throw new ArgumentOutOfRangeException("index");
                 Contract.EndContractBlock();
 
@@ -112,7 +112,7 @@ namespace ZeNET.Collections
 #endif
             set
             {
-                if (index >= this.count)
+                if (index >= this.Count)
                     throw new ArgumentOutOfRangeException("index");
                 Contract.EndContractBlock();
 

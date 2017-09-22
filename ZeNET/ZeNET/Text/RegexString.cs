@@ -59,7 +59,7 @@ namespace ZeNET.Text
     public class RegexString
     {
         private static readonly Regex validOptions = new Regex(@"^  (?<def>[imsnx]*) (?> - (?<undef>[imsnx]+) )? $", RegexOptions.IgnorePatternWhitespace);
-        private static Regex splittingRegex = new Regex(@" (?<var>%%) | % (?<B>\{)? (?<var>\w+) (?<-B>\})? ", RegexOptions.IgnorePatternWhitespace);
+        private static readonly Regex splittingRegex = new Regex(@" (?<var>%%) | % (?<B>\{)? (?<var>\w+) (?<-B>\})? ", RegexOptions.IgnorePatternWhitespace);
 
         private string pattern;
         private string options;

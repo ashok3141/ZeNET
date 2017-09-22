@@ -28,6 +28,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 
+using ZeNET.Synchronization;
 using ZeNET.Synchronization.Safe;
 using ZeNET.Core;
 
@@ -36,6 +37,7 @@ namespace ZeNET.Tests.Synchronization.Safe
     using LED = ZeNET.Tests.Synchronization.Safe.LockAnalysis.LockEventGrantTest;
     using Cons = ZeNET.Tests.Synchronization.Safe.LockAnalysis.LockEventGrantTest.Constants;
     using System.Collections.Generic;
+    using System.Threading.Tasks;
 
     public static class LockAnalysis
     {
@@ -293,6 +295,118 @@ namespace ZeNET.Tests.Synchronization.Safe
             {
                 Entered = 0, Exited = 1, ReadLock = 2, WriteLock = 3
             }
+        }
+
+        //public class AsyncLock
+        //{
+        //    public Task<bool> EnterAsync(ref Task<bool> grantReceipt)
+        //    {
+        //        throw new NotImplementedException();
+        //    }
+
+        //    public bool Exit(ref Task<bool> grantReceipt)
+        //    {
+        //        throw new NotImplementedException();
+        //    }
+        //}
+
+        public static void IncompatibleGrantTestAsyncLock(AsyncLock tskLock, Action<string> recordErrorMessage, int testDurationMilliseconds, bool tryAborting = false)
+        {
+            Stopwatch sw = Stopwatch.StartNew();
+            bool stopRunning = false;
+
+            ConcurrentBag<LED> bag = new ConcurrentBag<LED>();
+
+            ThreadStart writerCode = () =>
+            {
+                long t1, t2;
+                Random r = new Random();
+                Task<bool> grantReceipt = null;
+                while (!stopRunning)
+                {
+
+                    bool lockTaken = false;
+                    try
+                    {
+                        t1 = 0;
+                        try
+                        {
+                            grantReceipt = null;
+                            tskLock.EnterAsync(ref grantReceipt).Wait();
+                            Interlocked.Exchange(ref t1, sw.ElapsedTicks);
+                        }
+                        finally
+                        {
+                            lockTaken = grantReceipt.IsCompleted && !grantReceipt.IsFaulted && !grantReceipt.IsCanceled && grantReceipt.Result;
+                            if (lockTaken)
+                            {
+                                if (t1 != 0)
+                                    bag.Add(new LED(t1, Cons.Entered, Cons.WriteLock));
+                                else
+                                {
+                                    tskLock.Exit(ref grantReceipt);
+                                    lockTaken = false;
+                                }
+                            }
+                            else if (grantReceipt != null)
+                                recordErrorMessage("Lock was apparently granted, but lockTaken doesn't evaluate to true.");
+                        }
+
+                        if (lockTaken)
+                            Thread.Sleep(r.Next(0, 3));
+                    }
+                    finally
+                    {
+                        if (lockTaken)
+                        {
+                            t2 = sw.ElapsedTicks;
+                            tskLock.Exit(ref grantReceipt);
+                            bag.Add(new LED(t2, Cons.Exited, Cons.WriteLock));
+                        }
+                    }
+                }
+            };
+
+            Thread[] writeThreads = new Thread[5];
+
+            for (int i = 0; i < writeThreads.Length; i++)
+                writeThreads[i] = new Thread(writerCode);
+
+            Array.ForEach(writeThreads, th => { th.Start(); });
+
+            int abortedReaderCount = 0, abortedWriterCount = 0;
+            ThreadStart bullInAChinaShop = () =>
+            {
+                int totalThreads = writeThreads.Length;// + readThreads.Length;
+                Random r = new Random();
+
+                for (int reps = 0; reps < 5 || !stopRunning; reps++)
+                {
+                    Thread.Sleep(10);
+                    int threadNo = r.Next(0, totalThreads);
+                    
+                    try
+                    {
+                        writeThreads[threadNo].Abort();
+                        abortedWriterCount++;
+                    }
+                    catch { }
+                    writeThreads[threadNo] = new Thread(writerCode);
+                    writeThreads[threadNo].Start();
+                }                
+            };
+
+            Thread destroyer = new Thread(bullInAChinaShop);
+            if (tryAborting)
+                destroyer.Start();
+
+            Thread.Sleep(testDurationMilliseconds);
+            stopRunning = true;
+            Array.ForEach(writeThreads, th => { th.Join(); });
+            if (tryAborting)
+                destroyer.Join();
+
+            AnalyzeLockEventsForIllegalGrants(bag, recordErrorMessage);
         }
     }
 }

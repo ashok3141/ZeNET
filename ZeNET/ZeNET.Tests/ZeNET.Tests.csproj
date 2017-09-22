@@ -56,6 +56,8 @@
     <Compile Include="Synchronization\Caching\SpinlockCacheTest.cs" />
     <Compile Include="Synchronization\Safe\LockAnalysis.cs" />
     <Compile Include="Synchronization\Safe\SpinlockReaderWriterTest.cs" />
+    <Compile Include="Synchronization\AsyncLockTest.cs" />
+    <Compile Include="Synchronization\BooleanFlagNoResetTest.cs" />
     <Compile Include="Text\ParseExceptionTest.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>

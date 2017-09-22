@@ -46,22 +46,23 @@ namespace ZeNET.Synchronization.Caching.Safe
     /// can be computed from just a key of type <typeparamref name="TKey"/> using
     /// the supplied object-building function. The objects are retained in
     /// the cache for a minimum time that is specified at the time of construction.
-    /// 
     /// </summary>
     /// <typeparam name="TKey">The type of the key.</typeparam>
-    /// <typeparam name="TObject">The type of the immutable object.</typeparam>
+    /// <typeparam name="TObject">The type of the immutable object.</typeparam>    
+    /// <threadsafety static="true" instance="true"/>
     public class SpinlockCache<TKey, TObject> : IImmutableObjectCache<TKey, TObject>
     {
-        protected Dictionary<TKey, ObjectContainer> cache;
-        protected LinkedList<ObjectContainer> cacheIndex;
+        private Dictionary<TKey, ObjectContainer> cache;
+        private LinkedList<ObjectContainer> cacheIndex;
 
-        protected SpinlockReaderWriter lockCache = new SpinlockReaderWriter();
-        protected SpinlockReaderWriter lockDeleter = new SpinlockReaderWriter();
+        private SpinlockReaderWriter lockCache = new SpinlockReaderWriter();
+        private SpinlockReaderWriter lockDeleter = new SpinlockReaderWriter();
 
-        protected int concurrentAccessors = 0; // used for courtesy yielding by deleters to other accessors
-        protected Func<TKey, TObject> objectBuildFunction;
-        protected long minLifeInTicks;
-        protected long deletionThreshold = DateTime.MinValue.Ticks;
+        private volatile int concurrentAccessors = 0; // used for courtesy yielding by deleters to other accessors
+        private Func<TKey, TObject> objectBuildFunction;
+        private long minLifeInTicks;
+        private long deletionThreshold = DateTime.MinValue.Ticks;
+        private bool anticipateSlowKeyEqualityComparisons;
 
 #if DEBUG
         public Dictionary<TKey, ObjectContainer> private_cache { get { return this.cache;  } }
@@ -81,7 +82,7 @@ namespace ZeNET.Synchronization.Caching.Safe
 #endif
 
         /// <summary>
-        /// Initializes the cache to use a custom equality comparer for keys.
+        /// Initializes the cache with the specified settings.
         /// </summary>
         /// <param name="objectBuildFunction">The function that computes the
         /// object to cache from the key.</param>
@@ -90,7 +91,36 @@ namespace ZeNET.Synchronization.Caching.Safe
         /// deletion through calls to <see cref="DeleteOld"/>.</param>
         /// <param name="comparer">The equality comparer to use for determining
         /// whether two keys are equal.</param>
-        public SpinlockCache(Func<TKey, TObject> objectBuildFunction, double minLifeSeconds, IEqualityComparer<TKey> comparer)
+        /// <param name="anticipateSlowKeyEqualityComparisons">
+        /// Instructs the cache that the equality comparer for keys may be slow and that the cache
+        /// should attempt to pre-fetch a matching key from the cache using a shared lock.
+        /// </param>
+        /// <remarks>
+        /// <para>
+        /// There are cases where the type of the keys is a reference type but the cache needs to
+        /// use some sort of value comparison for equality. In those cases, <paramref name="comparer"/>
+        /// will implement the logic for value-based comparison. And the comparison could take a
+        /// long time to complete (if, for example, it performs the equivalent of more than fifty
+        /// elementary-type comparisons), especially if the compared objects are in fact equal.
+        /// </para>
+        /// 
+        /// <para>
+        /// In those cases, it is recommended that the <see cref="IEqualityComparer{T}.Equals(T, T)"/>
+        /// implementation perform a check of reference equality via <see cref="Object.ReferenceEquals(object, object)"/>
+        /// and return <b>true</b> immediately if there is indeed reference equality. And it will
+        /// probably be beneficial to set <paramref name="anticipateSlowKeyEqualityComparisons"/> to
+        /// <b>true</b> if there is a probability of high-concurrency scenarios. Doing so will
+        /// improve the throughput of the cache in calls to <see cref="GetObject(TKey)"/>, because it
+        /// attempts a pre-fetch of a matching key and if one is found, the matching key is used in
+        /// the next steps instead of the supplied key. The shared lock allows several threads to
+        /// perform the pre-fetch at the same time.
+        /// </para>
+        /// <para>
+        /// In all other cases, <paramref name="anticipateSlowKeyEqualityComparisons"/> should be
+        /// set to <b>false</b>.
+        /// </para>
+        /// </remarks>
+        public SpinlockCache(Func<TKey, TObject> objectBuildFunction, double minLifeSeconds, IEqualityComparer<TKey> comparer, bool anticipateSlowKeyEqualityComparisons)
         {
             if (minLifeSeconds < 0)
                 throw new ArgumentException("Minimum life of the cached object cannot be negative.", "minLifeSeconds");
@@ -98,11 +128,17 @@ namespace ZeNET.Synchronization.Caching.Safe
             this.cache = new Dictionary<TKey, ObjectContainer>(comparer);
             this.cacheIndex = new LinkedList<ObjectContainer>();
             this.objectBuildFunction = objectBuildFunction;
-            this.minLifeInTicks = (int)(minLifeSeconds * 1E7);
+            if (minLifeSeconds * 1E7 >= DateTime.MaxValue.Ticks)
+                this.minLifeInTicks = DateTime.MaxValue.Ticks;
+            else
+                this.minLifeInTicks = (long)(minLifeSeconds * 1E7);
+
+            this.anticipateSlowKeyEqualityComparisons = anticipateSlowKeyEqualityComparisons;
         }
 
         /// <summary>
-        /// Initializes the cache to use the default equality comparer for keys.
+        /// Initializes the cache to use the default equality comparer for keys and to use the
+        /// specified minimum life for objects in the cache.
         /// </summary>
         /// <param name="objectBuildFunction">The function that computes the
         /// object to cache from the key.</param>
@@ -110,7 +146,29 @@ namespace ZeNET.Synchronization.Caching.Safe
         /// request for the object for which the cached object is ineligible for
         /// deletion through calls to <see cref="DeleteOld"/>.</param>
         public SpinlockCache(Func<TKey, TObject> objectBuildFunction, double minLifeSeconds) :
-            this(objectBuildFunction, minLifeSeconds, EqualityComparer<TKey>.Default)
+            this(objectBuildFunction, minLifeSeconds, EqualityComparer<TKey>.Default, false)
+        { }
+
+        /// <summary>
+        /// Initializes the cache using the default equality comparer for keys, the specified
+        /// minimum life for objects in the cache, and the specified lock-taking behavior in calls
+        /// to <see cref="GetObject(TKey)"/>.
+        /// </summary>
+        /// <param name="objectBuildFunction">The function that computes the
+        /// object to cache from the key.</param>
+        /// <param name="minLifeSeconds">The time (in seconds) since the last
+        /// request for the object for which the cached object is ineligible for
+        /// deletion through calls to <see cref="DeleteOld"/>.</param>
+        /// <param name="anticipateSlowKeyEqualityComparisons">
+        /// Instructs the cache that the equality comparer for keys may be slow and that the cache
+        /// should attempt to pre-fetch a matching key from the cache using a shared lock.
+        /// </param>
+        /// <remarks>
+        /// For more information on <paramref name="anticipateSlowKeyEqualityComparisons"/>, see the note
+        /// under <see cref="SpinlockCache{TKey, TObject}.SpinlockCache(Func{TKey, TObject}, double, IEqualityComparer{TKey}, bool)"/>
+        /// </remarks>
+        public SpinlockCache(Func<TKey, TObject> objectBuildFunction, double minLifeSeconds, bool anticipateSlowKeyEqualityComparisons) :
+            this(objectBuildFunction, minLifeSeconds, EqualityComparer<TKey>.Default, anticipateSlowKeyEqualityComparisons)
         { }
 
         /// <summary>
@@ -144,33 +202,47 @@ namespace ZeNET.Synchronization.Caching.Safe
         /// object.</param>
         /// <returns>The computed object corresponding to <paramref name="key"/>.
         /// </returns>
+        /// <remarks>
+        /// <para>
+        /// If the object-building function throws an exception when called with <paramref name="key"/>,
+        /// then it may be appropriate to call <see cref="Remove(TKey)"/> with <paramref name="key"/>
+        /// as argument. This is because the <see cref="Exception"/> thrown by the object-building
+        /// function is cached just as the built object would have been cached if there had not been
+        /// an exception thrown. The life of the cached exception is subject to the same conditions
+        /// that govern the life of cached objects, and calls to fetch the object for the same
+        /// <paramref name="key"/> (or a matching one) will trigger the throwing of the same cached
+        /// exception without another attempt to build the object.
+        /// </para>
+        /// </remarks>
         public TObject GetObject(TKey key)
         {
             TObject ret = default(TObject);
-            ObjectContainer container = default(ObjectContainer);
-            bool needsComputation = default(bool);
+            ObjectContainer container = default(ObjectContainer);            
 
-            // First, we mitigate the problem posed by a custom comparer
-            // function for the Dictionary that has a slow equality checking
-            // method, by swapping out the supplied key with the existing key
-            // in the Dictionary, using only a read lock. TKey will usually be
-            // a reference type in these cases, so in the next step, comparison
-            // by reference should prove faster.
-            bool lockTaken = false;
-            try
+            bool lockTaken;
+
+            if (this.anticipateSlowKeyEqualityComparisons)
             {
-                this.lockCache.EnterReadLock(ref lockTaken);
-                if (this.cache.TryGetValue(key, out container))
-                    key = container.Key;
-            }
-            finally
-            {
-                if (lockTaken)
-                    this.lockCache.ExitReadLock();
+                // We mitigate the problem posed by slow equality comparisons of
+                // keys by trying to swap out the supplied key with the existing key
+                // in the Dictionary, using only a read lock.       
+                lockTaken = false;
+                try
+                {
+                    this.lockCache.EnterReadLock(ref lockTaken);
+                    if (this.cache.TryGetValue(key, out container))
+                        key = container.Key;
+                }
+                finally
+                {
+                    if (lockTaken)
+                        this.lockCache.ExitReadLock();
+                }
             }
 
             lockTaken = false;
             int prevAccessors = -1;
+            bool needsComputation;
             try
             {
                 try { } finally { prevAccessors = Interlocked.Increment(ref this.concurrentAccessors); }
@@ -216,8 +288,17 @@ namespace ZeNET.Synchronization.Caching.Safe
 
             if (needsComputation)
             {
-                container.CachedObject = ret = this.objectBuildFunction(key);
-                container.ComputeFinished = true;
+                try
+                {
+                    container.CachedObject = ret = this.objectBuildFunction(key);                    
+                } catch (Exception ex)
+                {
+                    container.computationException = ex;
+                    throw;
+                } finally
+                {
+                    container.ComputeFinished = true;
+                }
             }
             else
             {
@@ -229,6 +310,8 @@ namespace ZeNET.Synchronization.Caching.Safe
                     } while (!container.ComputeFinished);
                 }
 
+                if (container.computationException != null)
+                    throw container.computationException;
                 ret = container.CachedObject;
             }
             return ret;
@@ -315,17 +398,24 @@ namespace ZeNET.Synchronization.Caching.Safe
         /// </remarks>
         public void DeleteOld()
         {
-            long myDeletionThreshold = DateTime.UtcNow.AddTicks(-this.minLifeInTicks).Ticks;
+            long myDeletionThreshold;
+            DateTime now = DateTime.UtcNow;
+            if (now.Ticks >= this.minLifeInTicks)
+                myDeletionThreshold = now.AddTicks(-this.minLifeInTicks).Ticks;
+            else
+                myDeletionThreshold = DateTime.MinValue.Ticks;
 
             long replacedDeletionThreshold = Interlocked.Exchange(ref this.deletionThreshold, myDeletionThreshold);
-            while (new DateTime(replacedDeletionThreshold) > new DateTime(myDeletionThreshold))
+            // Undo the exchange in case we replaced a later threshold with an earlier threshold
+            // (would imply there was a concurrent deleter):
+            while (new DateTime(replacedDeletionThreshold) > new DateTime(myDeletionThreshold)) 
             {
                 myDeletionThreshold = replacedDeletionThreshold;
                 replacedDeletionThreshold = Interlocked.Exchange(ref this.deletionThreshold, replacedDeletionThreshold);
             }
 
             DateTime cacheClearedUpToDateTime = DateTime.MinValue;
-            DateTime toClearUpToDateTime = new DateTime(replacedDeletionThreshold);
+            DateTime toClearUpToDateTime = new DateTime(myDeletionThreshold);
 
             bool deleteLockTaken = false;
             do
@@ -338,7 +428,7 @@ namespace ZeNET.Synchronization.Caching.Safe
                     {
                         do
                         {
-                            while (Thread.VolatileRead(ref this.concurrentAccessors) != 0)
+                            while (this.concurrentAccessors != 0)
                                 Thread.Sleep(0);
 
                             bool cacheLockTaken = false;
@@ -347,7 +437,7 @@ namespace ZeNET.Synchronization.Caching.Safe
                                 this.lockCache.TryEnterWriteLock(ref cacheLockTaken);
                                 if (cacheLockTaken)
                                 {
-                                    while (cacheClearedUpToDateTime <= toClearUpToDateTime && Thread.VolatileRead(ref this.concurrentAccessors) == 0)
+                                    while (cacheClearedUpToDateTime <= toClearUpToDateTime && this.concurrentAccessors == 0)
                                     {
                                         if (this.cacheIndex.Count > 0)
                                         {
@@ -400,11 +490,9 @@ namespace ZeNET.Synchronization.Caching.Safe
             if (maxCount < 0)
                 throw new ArgumentException("maxCount must be nonnegative.", "maxCount");
 
-#if Framework_4
             Contract.EndContractBlock();
-#endif
 
-            if (this.cache.Count > maxCount)
+            if (this.Count > maxCount)
             {
                 bool deleteLockTaken = false;
                 try
@@ -444,7 +532,7 @@ namespace ZeNET.Synchronization.Caching.Safe
 #if DEBUG
         public class ObjectContainer
 #else
-        protected class ObjectContainer
+        private class ObjectContainer
 #endif
         {
             public DateTime LastAccessTimeUtc;
@@ -452,6 +540,7 @@ namespace ZeNET.Synchronization.Caching.Safe
             public TKey Key { private set; get; }
             public TObject CachedObject = default(TObject);
             public volatile bool ComputeFinished = false;
+            public volatile Exception computationException = null;
 
             public ObjectContainer(TKey key)
             {

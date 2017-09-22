@@ -57,7 +57,7 @@ namespace ZeNET.Collections
     /// second element, then by the third, and so on.
     /// </para>
     /// <para>
-    /// <em>NOTE: Unit testing for this class is pending.</em>
+    /// <em>NOTE: Though this class has been tested, no automated tests have been created for it in the Tests project.</em>
     /// </para>
     /// </remarks>
     public sealed class ArrayComparerByElement<T> : IEqualityComparer<T[]>, IEqualityComparer, IComparer<T[]>, IComparer

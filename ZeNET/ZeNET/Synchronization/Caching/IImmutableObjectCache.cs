@@ -24,12 +24,48 @@
 
 namespace ZeNET.Synchronization.Caching
 {
+    /// <summary>
+    /// Defines an API for a cache of immutable objects that are retained in the cache for at least
+    /// a set amount of time after the last access.
+    /// </summary>
+    /// <typeparam name="TKey">The type of the keys for the objects in the cache.</typeparam>
+    /// <typeparam name="TObject">The type of the objects stored in the cache.</typeparam>
+    /// <remarks>
+    /// The cache should be expected to be thread-safe.
+    /// </remarks>
     public interface IImmutableObjectCache<TKey, TObject>
     {
+        /// <summary>
+        /// Retrieves a cached object or builds a new one, adds it to the cache, and returns it.
+        /// </summary>
+        /// <param name="key">The key from which the immutable object can be built.</param>
+        /// <returns>The built object.</returns>
         TObject GetObject(TKey key);
+        
+        /// <summary>
+        /// Deletes objects from the cache that have not been accessed for at least the set amount
+        /// of time.
+        /// </summary>
         void DeleteOld();
+        
+        /// <summary>
+        /// Ensures that the cache contains no more than <paramref name="maxCount"/> objects by
+        /// starting deleting the objects with the earliest last-access times.
+        /// </summary>
+        /// <param name="maxCount">The maximum number of objects to retain in the cache.</param>
         void TrimTo(int maxCount);
+
+        /// <summary>
+        /// Removes the object corresponding to <paramref name="key"/>, if it is present in the
+        /// cache.
+        /// </summary>
+        /// <param name="key">The key identifying the object to remove.</param>
+        /// <returns><b>True</b> if the object was found and removed, <b>false</b> otherwise.</returns>
         bool Remove(TKey key);
+
+        /// <summary>
+        /// The number of objects present in the cache currently.
+        /// </summary>
         int Count { get; }
     }
 }

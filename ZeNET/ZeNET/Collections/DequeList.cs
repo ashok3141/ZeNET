@@ -70,9 +70,6 @@ namespace ZeNET.Collections
     /// All single-element accesses at either end are <i>O</i>(1) operations (adding or removing or
     /// peeking). 
     /// </para>
-    /// <para>
-    /// <em>NOTE: Unit testing for this class is pending.</em>
-    /// </para>
     /// </remarks>
     /// <threadsafety static="true" instance="false"/>
     public class DequeList<T> : IList<T>

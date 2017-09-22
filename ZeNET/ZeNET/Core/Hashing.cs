@@ -66,9 +66,6 @@ namespace ZeNET.Core
         /// <returns>The hash based on the elements of the array.</returns>
         /// <remarks>
         /// <para>The method uses a fixed seed that was randomly generated (0xc8d28b43).</para>
-        /// <para>
-        /// <em>NOTE: Unit testing for this class is pending.</em>
-        /// </para>
         /// </remarks>
         public static int Murmur3_32bit<T>(T[] array)
         {

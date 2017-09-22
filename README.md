@@ -5,9 +5,16 @@ typically depend only on other classes in their own namespaces and on a core
 namespace. The present focus of the library is on synchronization (across
 threads), collections, and text processing.
 
+Documentation for the repository may be found here:
+	http://zenet.ashokgurumurthy.info
+
 The library aims to be backward-compatible up to .NET Framework 2.0 and to be
 usable in hosted environments such as Microsoft SQL Server. At a minimum, the
 Core namespace will always be backward-compatible.
+
+Documentation for the library can be found under ZeNET/Documentation/Help. If
+cloning the repository, HTML help is available at the root index.html. For
+single-file help, see Documentation.chm.
 
 The library is made available under the MIT license, which makes it free of
 charge and imposes almost no restrictions on its use. The text may be found in

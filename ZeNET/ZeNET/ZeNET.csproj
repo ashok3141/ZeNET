@@ -161,7 +161,9 @@
     <Compile Include="Examples\Synchronization\AsyncLockExamples.cs" />
     <Compile Include="Examples\Synchronization\BooleanFlagNoResetExamples.cs" />
     <Compile Include="Synchronization\BooleanFlagNoReset.cs" />
+    <Compile Include="Synchronization\Caching\AutoDeleteImmutableCache.cs" />
     <Compile Include="Synchronization\Caching\IImmutableObjectCache.cs" />
+    <Compile Include="Synchronization\Caching\ImmutableObjectCache.cs" />
     <Compile Include="Synchronization\Caching\NamespaceDoc.cs" />
     <Compile Include="Synchronization\Caching\Safe\NamespaceDoc.cs" />
     <Compile Include="Synchronization\Caching\Safe\SpinlockCache.cs" />

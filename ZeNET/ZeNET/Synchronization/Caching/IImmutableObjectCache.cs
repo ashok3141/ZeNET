@@ -31,7 +31,7 @@ namespace ZeNET.Synchronization.Caching
     /// <typeparam name="TKey">The type of the keys for the objects in the cache.</typeparam>
     /// <typeparam name="TObject">The type of the objects stored in the cache.</typeparam>
     /// <remarks>
-    /// The cache should be expected to be thread-safe.
+    /// The cache implementation will typically be thread safe.
     /// </remarks>
     public interface IImmutableObjectCache<TKey, TObject>
     {

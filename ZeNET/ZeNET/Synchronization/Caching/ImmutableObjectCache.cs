@@ -35,15 +35,15 @@ using ZeNET.Core.Compatibility.ProSystem;
 #endif
 // End: standard inclusion list
 
-using ZeNET.Synchronization.Safe;
 using System.Collections.Generic;
 using System.Threading;
 
-namespace ZeNET.Synchronization.Caching.Safe
+namespace ZeNET.Synchronization.Caching
 {
+#if Framework_4
     /// <summary>
     /// A cache of immutable objects of type <typeparamref name="TObject"/> that
-    /// can be computed from just a key of type <typeparamref name="TKey"/> using
+    /// can be built from just a key of type <typeparamref name="TKey"/> using
     /// the supplied object-building function. The objects are retained in
     /// the cache for a minimum time that is specified at the time of construction.
     /// </summary>
@@ -56,41 +56,26 @@ namespace ZeNET.Synchronization.Caching.Safe
     /// called periodically, one could use the wrapper provided by <see cref="AutoDeleteImmutableCache{TKey, TObject}"/>.
     /// </para>
     /// <para>
-    /// This implementation is "safe" for SQL Server; that is, it may be used in an assembly marked
-    /// with SAFE permissions within SQL Server.
+    /// At present, this class is not available when targeting .NET Framework v2.0.
     /// </para>
     /// </remarks>
     /// <threadsafety static="true" instance="true"/>
-    public class SpinlockCache<TKey, TObject> : IImmutableObjectCache<TKey, TObject>
+    public class ImmutableObjectCache<TKey, TObject> : IImmutableObjectCache<TKey, TObject>
     {
         private Dictionary<TKey, ObjectContainer> cache;
         private LinkedList<ObjectContainer> cacheIndex;
 
-        private SpinlockReaderWriter lockCache = new SpinlockReaderWriter();
-        private SpinlockReaderWriter lockDeleter = new SpinlockReaderWriter();
+        private ReaderWriterLockSlim lockCache = new ReaderWriterLockSlim();
+        private object lockDeleter = new object();
 
         private volatile int concurrentAccessors = 0; // used for courtesy yielding by deleters to other accessors
+        private volatile bool deleterNeedsSignaling = false;
+        private ManualResetEventSlim deleterSignaler = new ManualResetEventSlim(false);
+
         private Func<TKey, TObject> objectBuildFunction;
         private long minLifeInTicks;
         private long deletionThreshold = DateTime.MinValue.Ticks;
         private bool anticipateSlowKeyEqualityComparisons;
-
-#if DEBUG
-        public Dictionary<TKey, ObjectContainer> private_cache { get { return this.cache;  } }
-        public LinkedList<ObjectContainer> private_cacheIndex { get { return this.cacheIndex; } }
-
-        public int private_concurrentAccessors { get { return this.concurrentAccessors; } } // used for courtesy yielding by deleters to other accessors
-        public Func<TKey, TObject> private_objectBuildFunction { get { return this.objectBuildFunction; } }
-        public double private_minLifeInTicks { get { return this.minLifeInTicks; } }
-        public long private_deletionThreshold { get { return this.deletionThreshold; } }
-
-        public bool private_IsLockDeleteWritable { get { return this.lockDeleter.IsWritable; } }
-        public bool private_IsLockDeleteReadable { get { return this.lockDeleter.IsReadable; } }
-        public bool private_IsLockCacheWritable { get { return this.lockCache.IsWritable; } }
-        public bool private_IsLockCacheReadable { get { return this.lockCache.IsReadable; } }
-        
-        public readonly bool private_instanceDisposalNecessary;
-#endif
 
         /// <summary>
         /// Initializes the cache with the specified settings.
@@ -131,7 +116,7 @@ namespace ZeNET.Synchronization.Caching.Safe
         /// set to <b>false</b>.
         /// </para>
         /// </remarks>
-        public SpinlockCache(Func<TKey, TObject> objectBuildFunction, double minLifeSeconds, IEqualityComparer<TKey> comparer, bool anticipateSlowKeyEqualityComparisons)
+        public ImmutableObjectCache(Func<TKey, TObject> objectBuildFunction, double minLifeSeconds, IEqualityComparer<TKey> comparer, bool anticipateSlowKeyEqualityComparisons)
         {
             if (minLifeSeconds < 0)
                 throw new ArgumentException("Minimum life of the cached object cannot be negative.", "minLifeSeconds");
@@ -156,7 +141,7 @@ namespace ZeNET.Synchronization.Caching.Safe
         /// <param name="minLifeSeconds">The time (in seconds) since the last
         /// request for the object for which the cached object is ineligible for
         /// deletion through calls to <see cref="DeleteOld"/>.</param>
-        public SpinlockCache(Func<TKey, TObject> objectBuildFunction, double minLifeSeconds) :
+        public ImmutableObjectCache(Func<TKey, TObject> objectBuildFunction, double minLifeSeconds) :
             this(objectBuildFunction, minLifeSeconds, EqualityComparer<TKey>.Default, false)
         { }
 
@@ -174,11 +159,8 @@ namespace ZeNET.Synchronization.Caching.Safe
         /// Instructs the cache that the equality comparer for keys may be slow and that the cache
         /// should attempt to pre-fetch a matching key from the cache using a shared lock.
         /// </param>
-        /// <remarks>
-        /// For more information on <paramref name="anticipateSlowKeyEqualityComparisons"/>, see the note
-        /// under <see cref="SpinlockCache{TKey, TObject}.SpinlockCache(Func{TKey, TObject}, double, IEqualityComparer{TKey}, bool)"/>
-        /// </remarks>
-        public SpinlockCache(Func<TKey, TObject> objectBuildFunction, double minLifeSeconds, bool anticipateSlowKeyEqualityComparisons) :
+        /// <seealso cref="GetObject(TKey)"/>
+        public ImmutableObjectCache(Func<TKey, TObject> objectBuildFunction, double minLifeSeconds, bool anticipateSlowKeyEqualityComparisons) :
             this(objectBuildFunction, minLifeSeconds, EqualityComparer<TKey>.Default, anticipateSlowKeyEqualityComparisons)
         { }
 
@@ -189,16 +171,14 @@ namespace ZeNET.Synchronization.Caching.Safe
         {
             get
             {
-                bool lockTaken = false;
-
                 try
                 {
-                    this.lockCache.EnterReadLock(ref lockTaken);
+                    this.lockCache.EnterReadLock();
                     return this.cache.Count;
                 }
                 finally
                 {
-                    if (lockTaken)
+                    if (this.lockCache.IsReadLockHeld)
                         this.lockCache.ExitReadLock();
                 }
             }
@@ -228,48 +208,42 @@ namespace ZeNET.Synchronization.Caching.Safe
         public TObject GetObject(TKey key)
         {
             TObject ret = default(TObject);
-            ObjectContainer container = default(ObjectContainer);            
-
-            bool lockTaken;
+            ObjectContainer container = default(ObjectContainer);
 
             if (this.anticipateSlowKeyEqualityComparisons)
             {
                 // We mitigate the problem posed by slow equality comparisons of
                 // keys by trying to swap out the supplied key with the existing key
                 // in the Dictionary, using only a read lock.       
-                lockTaken = false;
                 try
                 {
-                    this.lockCache.EnterReadLock(ref lockTaken);
+                    this.lockCache.EnterReadLock();
                     if (this.cache.TryGetValue(key, out container))
                         key = container.Key;
                 }
                 finally
                 {
-                    if (lockTaken)
+                    if (this.lockCache.IsReadLockHeld)
                         this.lockCache.ExitReadLock();
                 }
             }
 
-            lockTaken = false;
             int prevAccessors = -1;
             bool needsComputation;
             try
             {
                 try { } finally { prevAccessors = Interlocked.Increment(ref this.concurrentAccessors); }
-                this.lockCache.EnterWriteLock(ref lockTaken);
+                this.lockCache.EnterWriteLock();                
 
                 if (this.cache.TryGetValue(key, out container))
                 {
                     needsComputation = false;
-                    try { }
-                    finally
-                    {
-                        container.UpdateTimestamp();
-                        ret = container.CachedObject;
-                        this.cacheIndex.Remove(container.Node);
-                        this.cacheIndex.AddLast(container.Node);
-                    }
+                    Thread.BeginCriticalRegion();
+                    container.UpdateTimestamp();
+                    ret = container.CachedObject;
+                    this.cacheIndex.Remove(container.Node);
+                    this.cacheIndex.AddLast(container.Node);
+                    Thread.EndCriticalRegion();
                 }
                 else
                 {
@@ -277,21 +251,23 @@ namespace ZeNET.Synchronization.Caching.Safe
                     container = new ObjectContainer(key);
                     ret = default(TObject);
                     container.CachedObject = default(TObject);
-                    try { }
-                    finally
-                    {
-                        this.cache[key] = container;
-                        this.cacheIndex.AddLast(container);
-                        container.Node = this.cacheIndex.Last;
-                    }
+                    Thread.BeginCriticalRegion();
+                    this.cache[key] = container;
+                    this.cacheIndex.AddLast(container);
+                    container.Node = this.cacheIndex.Last;
+                    Thread.EndCriticalRegion();
                 }
             }
             finally
             {
-                if (lockTaken)
+                if (this.lockCache.IsWriteLockHeld)
                 {
                     this.lockCache.ExitWriteLock();
-                    Interlocked.Decrement(ref this.concurrentAccessors);
+                    if (Interlocked.Decrement(ref this.concurrentAccessors) == 0 && this.deleterNeedsSignaling)
+                    {
+                        this.deleterNeedsSignaling = false;
+                        this.deleterSignaler.Set();
+                    }
                 }
                 else if (prevAccessors != -1)
                     Interlocked.Decrement(ref this.concurrentAccessors);
@@ -301,25 +277,21 @@ namespace ZeNET.Synchronization.Caching.Safe
             {
                 try
                 {
-                    container.CachedObject = ret = this.objectBuildFunction(key);                    
-                } catch (Exception ex)
+                    container.CachedObject = ret = this.objectBuildFunction(key);
+                }
+                catch (Exception ex)
                 {
                     container.computationException = ex;
                     throw;
-                } finally
+                }
+                finally
                 {
-                    container.ComputeFinished = true;
+                    container.ComputationFlag.Set();
                 }
             }
             else
             {
-                if (!container.ComputeFinished)
-                {
-                    do
-                    {
-                        Thread.Sleep(0);
-                    } while (!container.ComputeFinished);
-                }
+                container.ComputationFlag.Wait();
 
                 if (container.computationException != null)
                     throw container.computationException;
@@ -339,37 +311,36 @@ namespace ZeNET.Synchronization.Caching.Safe
             bool ret = false;
             ObjectContainer container = default(ObjectContainer);
 
-            bool lockTaken = false;
             int prevAccessorCount = -1;
             try
             {
                 try { } finally { prevAccessorCount = Interlocked.Increment(ref this.concurrentAccessors); }
-                this.lockCache.TryEnterWriteLock(ref lockTaken);
-                if (lockTaken)
+                if (this.lockCache.TryEnterWriteLock(0))
                 {
                     if (ret = this.cache.TryGetValue(key, out container))
                     {
+                        Thread.BeginCriticalRegion();
                         this.cacheIndex.Remove(container.Node);
                         this.cache.Remove(key);
+                        Thread.EndCriticalRegion();
                     }
                 }
                 else
                 {
-                    bool readLockTaken = false;
                     try
                     {
-                        this.lockCache.EnterReadLock(ref readLockTaken);
+                        this.lockCache.EnterReadLock();
                         if (!this.cache.ContainsKey(key))
                             return false;
                     }
                     finally
                     {
-                        if (readLockTaken)
+                        if (this.lockCache.IsReadLockHeld)
                             this.lockCache.ExitReadLock();
                     }
 
                     // The key is definitely present in the cache, so ...
-                    this.lockCache.EnterWriteLock(ref lockTaken);
+                    this.lockCache.EnterWriteLock();
                     if (ret = this.cache.TryGetValue(key, out container))
                     {
                         this.cacheIndex.Remove(container.Node);
@@ -379,13 +350,14 @@ namespace ZeNET.Synchronization.Caching.Safe
             }
             finally
             {
-                if (lockTaken)
-                {
+                if (this.lockCache.IsWriteLockHeld)
                     this.lockCache.ExitWriteLock();
-                    Interlocked.Decrement(ref this.concurrentAccessors);
+
+                if (prevAccessorCount != -1 && Interlocked.Decrement(ref this.concurrentAccessors) == 0 && this.deleterNeedsSignaling)
+                {
+                    this.deleterNeedsSignaling = true;
+                    this.deleterSignaler.Set();
                 }
-                else if (prevAccessorCount != -1)
-                    Interlocked.Decrement(ref this.concurrentAccessors);
             }
 
             return ret;
@@ -419,7 +391,7 @@ namespace ZeNET.Synchronization.Caching.Safe
             long replacedDeletionThreshold = Interlocked.Exchange(ref this.deletionThreshold, myDeletionThreshold);
             // Undo the exchange in case we replaced a later threshold with an earlier threshold
             // (would imply there was a concurrent deleter):
-            while (new DateTime(replacedDeletionThreshold) > new DateTime(myDeletionThreshold)) 
+            while (replacedDeletionThreshold > myDeletionThreshold)
             {
                 myDeletionThreshold = replacedDeletionThreshold;
                 replacedDeletionThreshold = Interlocked.Exchange(ref this.deletionThreshold, replacedDeletionThreshold);
@@ -428,25 +400,31 @@ namespace ZeNET.Synchronization.Caching.Safe
             DateTime cacheClearedUpToDateTime = DateTime.MinValue;
             DateTime toClearUpToDateTime = new DateTime(myDeletionThreshold);
 
-            bool deleteLockTaken = false;
+            bool deleteLockTaken;
             do
             {
                 deleteLockTaken = false;
                 try
-                {
-                    this.lockDeleter.TryEnterWriteLock(ref deleteLockTaken);
+                {                    
+                    Monitor.TryEnter(this.lockDeleter, ref deleteLockTaken);
                     if (deleteLockTaken)
                     {
                         do
                         {
                             while (this.concurrentAccessors != 0)
-                                Thread.Sleep(0);
+                            {
+                                // Only a thread holding this.lockDeleter calls Reset():
+                                this.deleterSignaler.Reset();
+                                
+                                this.deleterNeedsSignaling = true;
 
-                            bool cacheLockTaken = false;
+                                if (this.concurrentAccessors != 0)
+                                    this.deleterSignaler.Wait();
+                            }
+
                             try
                             {
-                                this.lockCache.TryEnterWriteLock(ref cacheLockTaken);
-                                if (cacheLockTaken)
+                                if (this.lockCache.TryEnterWriteLock(0))
                                 {
                                     while (cacheClearedUpToDateTime <= toClearUpToDateTime && this.concurrentAccessors == 0)
                                     {
@@ -456,12 +434,10 @@ namespace ZeNET.Synchronization.Caching.Safe
                                             cacheClearedUpToDateTime = earliestEntry.LastAccessTimeUtc;
                                             if (cacheClearedUpToDateTime <= toClearUpToDateTime)
                                             {
-                                                try { }
-                                                finally
-                                                {
-                                                    this.cacheIndex.RemoveFirst();
-                                                    this.cache.Remove(earliestEntry.Key);
-                                                }
+                                                Thread.BeginCriticalRegion();
+                                                this.cacheIndex.RemoveFirst();
+                                                this.cache.Remove(earliestEntry.Key);
+                                                Thread.EndCriticalRegion();
                                             }
                                         }
                                         else
@@ -471,7 +447,7 @@ namespace ZeNET.Synchronization.Caching.Safe
                             }
                             finally
                             {
-                                if (cacheLockTaken)
+                                if (this.lockCache.IsWriteLockHeld)
                                     this.lockCache.ExitWriteLock();
                             }
                         } while (cacheClearedUpToDateTime <= toClearUpToDateTime);
@@ -481,7 +457,7 @@ namespace ZeNET.Synchronization.Caching.Safe
                 finally
                 {
                     if (deleteLockTaken)
-                        this.lockDeleter.ExitWriteLock();
+                        Monitor.Exit(this.lockDeleter);                        
                 }
             } while (deleteLockTaken && cacheClearedUpToDateTime <= toClearUpToDateTime);
         }
@@ -504,53 +480,39 @@ namespace ZeNET.Synchronization.Caching.Safe
             Contract.EndContractBlock();
 
             if (this.Count > maxCount)
-            {
-                bool deleteLockTaken = false;
-                try
+            {                    
+                lock (this.lockDeleter)
                 {
-                    this.lockDeleter.EnterWriteLock(ref deleteLockTaken);
-                    bool cacheLockTaken = false;
                     try
                     {
-                        this.lockCache.EnterWriteLock(ref cacheLockTaken);
+                        this.lockCache.EnterWriteLock();
                         while (this.cache.Count > maxCount)
                         {
                             ObjectContainer itemToRemove = this.cacheIndex.First.Value;
-                            try { }
-                            finally
-                            {
-                                this.cacheIndex.RemoveFirst();
-                                this.cache.Remove(itemToRemove.Key);
-                            }
+                            Thread.BeginCriticalRegion();
+                            this.cacheIndex.RemoveFirst();
+                            this.cache.Remove(itemToRemove.Key);
+                            Thread.EndCriticalRegion();
                         }
                     }
                     finally
                     {
-                        if (cacheLockTaken)
+                        if (this.lockCache.IsWriteLockHeld)
                             this.lockCache.ExitWriteLock();
                     }
-                }
-                finally
-                {
-                    if (deleteLockTaken)
-                        this.lockDeleter.ExitWriteLock();
                 }
 
                 this.DeleteOld();
             }
         }
 
-#if DEBUG
-        public class ObjectContainer
-#else
         private class ObjectContainer
-#endif
         {
             public DateTime LastAccessTimeUtc;
             public LinkedListNode<ObjectContainer> Node = default(LinkedListNode<ObjectContainer>);
             public TKey Key { private set; get; }
             public TObject CachedObject = default(TObject);
-            public volatile bool ComputeFinished = false;
+            public BooleanFlagNoReset ComputationFlag = new BooleanFlagNoReset();
             public volatile Exception computationException = null;
 
             public ObjectContainer(TKey key)
@@ -561,4 +523,5 @@ namespace ZeNET.Synchronization.Caching.Safe
             public void UpdateTimestamp() { this.LastAccessTimeUtc = DateTime.UtcNow; }
         }
     }
+#endif
 }

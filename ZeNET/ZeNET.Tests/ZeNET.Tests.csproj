@@ -54,6 +54,7 @@
     <Compile Include="Collections\LinkedHeap.cs" />
     <Compile Include="Collections\ListTestHelper.cs" />
     <Compile Include="Synchronization\Caching\SpinlockCacheTest.cs" />
+    <Compile Include="Synchronization\Caching\ImmutableObjectCacheTest.cs" />
     <Compile Include="Synchronization\Safe\LockAnalysis.cs" />
     <Compile Include="Synchronization\Safe\SpinlockReaderWriterTest.cs" />
     <Compile Include="Synchronization\AsyncLockTest.cs" />
